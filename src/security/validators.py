@@ -132,15 +132,25 @@ class SecurityValidator:
     ]
 
     def __init__(
-        self, approved_directory: Path, disable_security_patterns: bool = False
+        self,
+        approved_directory: Path,
+        disable_security_patterns: bool = False,
+        additional_allowed_paths: Optional[List[str]] = None,
     ):
         """Initialize validator with approved directory."""
         self.approved_directory = approved_directory.resolve()
         self.disable_security_patterns = disable_security_patterns
+        # Resolve additional allowed paths (files or directories)
+        self.additional_allowed_paths: List[Path] = []
+        for p in (additional_allowed_paths or []):
+            resolved = Path(p).resolve()
+            if resolved.exists():
+                self.additional_allowed_paths.append(resolved)
         logger.info(
             "Security validator initialized",
             approved_directory=str(self.approved_directory),
             disable_security_patterns=self.disable_security_patterns,
+            additional_allowed_paths=[str(p) for p in self.additional_allowed_paths],
         )
 
     def validate_path(
@@ -186,8 +196,8 @@ class SecurityValidator:
             # Resolve path and check boundaries
             target = target.resolve()
 
-            # Ensure target is within approved directory
-            if not self._is_within_directory(target, self.approved_directory):
+            # Ensure target is within approved directory or additional allowed paths
+            if not self._is_allowed_path(target):
                 logger.warning(
                     "Path traversal attempt detected",
                     requested_path=user_path,
@@ -214,6 +224,18 @@ class SecurityValidator:
             return True
         except ValueError:
             return False
+
+    def _is_allowed_path(self, target: Path) -> bool:
+        """Check if target is within approved directory or additional allowed paths."""
+        if self._is_within_directory(target, self.approved_directory):
+            return True
+        # Check additional allowed paths (exact file match or within directory)
+        for allowed in self.additional_allowed_paths:
+            if allowed.is_file() and target == allowed:
+                return True
+            if allowed.is_dir() and self._is_within_directory(target, allowed):
+                return True
+        return False
 
     def validate_filename(self, filename: str) -> Tuple[bool, Optional[str]]:
         """Validate uploaded filename.

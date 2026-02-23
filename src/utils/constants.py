@@ -4,10 +4,14 @@
 APP_NAME = "Claude Code Telegram Bot"
 APP_DESCRIPTION = "Telegram bot for remote Claude Code access"
 
-# Default limits
+# Default limits (used as safe defaults when paying per-token via API key)
 DEFAULT_CLAUDE_TIMEOUT_SECONDS = 300
 DEFAULT_CLAUDE_MAX_TURNS = 10
 DEFAULT_CLAUDE_MAX_COST_PER_USER = 10.0
+
+# Limits for subscription mode (CLI auth, no per-token cost)
+SUBSCRIPTION_CLAUDE_TIMEOUT_SECONDS = 600
+SUBSCRIPTION_CLAUDE_MAX_COST_PER_USER = 999999.0
 
 DEFAULT_RATE_LIMIT_REQUESTS = 10
 DEFAULT_RATE_LIMIT_WINDOW = 60

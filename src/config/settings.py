@@ -15,6 +15,8 @@ from typing import Any, List, Literal, Optional
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+import structlog
+
 from src.utils.constants import (
     DEFAULT_CLAUDE_MAX_COST_PER_USER,
     DEFAULT_CLAUDE_MAX_TURNS,
@@ -26,7 +28,11 @@ from src.utils.constants import (
     DEFAULT_RATE_LIMIT_REQUESTS,
     DEFAULT_RATE_LIMIT_WINDOW,
     DEFAULT_SESSION_TIMEOUT_HOURS,
+    SUBSCRIPTION_CLAUDE_MAX_COST_PER_USER,
+    SUBSCRIPTION_CLAUDE_TIMEOUT_SECONDS,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 class Settings(BaseSettings):
@@ -48,6 +54,14 @@ class Settings(BaseSettings):
     )
     auth_token_secret: Optional[SecretStr] = Field(
         None, description="Secret for auth tokens"
+    )
+
+    additional_allowed_paths: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Comma-separated list of additional file/directory paths allowed "
+            "outside the approved directory (e.g. parent CLAUDE.md files)"
+        ),
     )
 
     # Security relaxation (for trusted environments)
@@ -76,8 +90,8 @@ class Settings(BaseSettings):
     claude_model: str = Field(
         "claude-3-5-sonnet-20241022", description="Claude model to use"
     )
-    claude_max_turns: int = Field(
-        DEFAULT_CLAUDE_MAX_TURNS, description="Max conversation turns"
+    claude_max_turns: Optional[int] = Field(
+        None, description="Max conversation turns (None = unlimited)"
     )
     claude_timeout_seconds: int = Field(
         DEFAULT_CLAUDE_TIMEOUT_SECONDS, description="Claude timeout"
@@ -90,26 +104,8 @@ class Settings(BaseSettings):
     # src/claude/facade.py (_get_admin_instructions),
     # and src/bot/orchestrator.py (_TOOL_ICONS).
     claude_allowed_tools: Optional[List[str]] = Field(
-        default=[
-            "Read",
-            "Write",
-            "Edit",
-            "Bash",
-            "Glob",
-            "Grep",
-            "LS",
-            "Task",
-            "TaskOutput",
-            "MultiEdit",
-            "NotebookRead",
-            "NotebookEdit",
-            "WebFetch",
-            "TodoRead",
-            "TodoWrite",
-            "WebSearch",
-            "Skill",
-        ],
-        description="List of allowed Claude tools",
+        default=None,
+        description="List of allowed Claude tools (None = allow all)",
     )
     claude_disallowed_tools: Optional[List[str]] = Field(
         default=[],
@@ -244,6 +240,18 @@ class Settings(BaseSettings):
             return [int(uid.strip()) for uid in v.split(",") if uid.strip()]
         if isinstance(v, list):
             return [int(uid) for uid in v]
+        return v  # type: ignore[no-any-return]
+
+    @field_validator("additional_allowed_paths", mode="before")
+    @classmethod
+    def parse_additional_paths(cls, v: Any) -> Optional[List[str]]:
+        """Parse comma-separated path list."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return [p.strip() for p in v.split(",") if p.strip()]
+        if isinstance(v, list):
+            return [str(p) for p in v]
         return v  # type: ignore[no-any-return]
 
     @field_validator("claude_allowed_tools", mode="before")
@@ -383,6 +391,45 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "projects_config_path required when enable_project_threads is True"
                 )
+
+        return self
+
+    @model_validator(mode="after")
+    def enforce_api_key_safety_limits(self) -> "Settings":
+        """Auto-enforce safe limits when using API keys (paying per-token).
+
+        When ANTHROPIC_API_KEY is set, you're paying per-token and need
+        guardrails. When it's not set (CLI subscription mode), limits are
+        relaxed since there's no per-token cost.
+
+        This prevents accidentally running with unlimited turns/cost after
+        switching from a Max subscription to API key billing.
+        """
+        if self.anthropic_api_key:
+            # API key mode: enforce safe defaults if limits are too loose
+            if self.claude_max_turns is None or self.claude_max_turns > 50:
+                logger.warning(
+                    "API key detected — enforcing max_turns safety limit",
+                    previous=self.claude_max_turns,
+                    enforced=DEFAULT_CLAUDE_MAX_TURNS,
+                )
+                self.claude_max_turns = DEFAULT_CLAUDE_MAX_TURNS
+
+            if self.claude_max_cost_per_user > DEFAULT_CLAUDE_MAX_COST_PER_USER:
+                logger.warning(
+                    "API key detected — enforcing cost safety limit",
+                    previous=self.claude_max_cost_per_user,
+                    enforced=DEFAULT_CLAUDE_MAX_COST_PER_USER,
+                )
+                self.claude_max_cost_per_user = DEFAULT_CLAUDE_MAX_COST_PER_USER
+
+            if self.claude_timeout_seconds > DEFAULT_CLAUDE_TIMEOUT_SECONDS:
+                logger.warning(
+                    "API key detected — enforcing timeout safety limit",
+                    previous=self.claude_timeout_seconds,
+                    enforced=DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+                )
+                self.claude_timeout_seconds = DEFAULT_CLAUDE_TIMEOUT_SECONDS
 
         return self
 
